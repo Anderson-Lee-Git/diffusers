@@ -3,6 +3,7 @@ from typing import List, Union
 
 import numpy as np
 import PIL.Image
+import torch
 
 from ...utils import BaseOutput
 
@@ -19,3 +20,4 @@ class StableDiffusion3PipelineOutput(BaseOutput):
     """
 
     images: Union[List[PIL.Image.Image], np.ndarray]
+    hidden_states: List[torch.Tensor]

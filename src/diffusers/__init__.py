@@ -525,6 +525,7 @@ else:
             "StableDiffusion3PAGImg2ImgPipeline",
             "StableDiffusion3PAGImg2ImgPipeline",
             "StableDiffusion3PAGPipeline",
+            "StableDiffusion3DiversePipeline",
             "StableDiffusion3Pipeline",
             "StableDiffusionAdapterPipeline",
             "StableDiffusionAttendAndExcitePipeline",

@@ -296,6 +296,8 @@ class StableDiffusionPipeline(
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1) if getattr(self, "vae", None) else 8
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
         self.register_to_config(requires_safety_checker=requires_safety_checker)
+        self._use_projection_matrix = False
+        self._projection_matrix = None
 
     def _encode_prompt(
         self,
@@ -421,11 +423,13 @@ class StableDiffusionPipeline(
 
             if clip_skip is None:
                 prompt_embeds = self.text_encoder(text_input_ids.to(device), attention_mask=attention_mask)
+                prompt_embed_pooled = prompt_embeds.pooler_output
                 prompt_embeds = prompt_embeds[0]
             else:
                 prompt_embeds = self.text_encoder(
                     text_input_ids.to(device), attention_mask=attention_mask, output_hidden_states=True
                 )
+                prompt_embed_pooled = prompt_embeds.pooler_output
                 # Access the `hidden_states` first, that contains a tuple of
                 # all the hidden states from the encoder layers. Then index into
                 # the tuple to access the hidden states from the desired layer.
@@ -444,11 +448,14 @@ class StableDiffusionPipeline(
             prompt_embeds_dtype = prompt_embeds.dtype
 
         prompt_embeds = prompt_embeds.to(dtype=prompt_embeds_dtype, device=device)
+        prompt_embed_pooled = prompt_embed_pooled.to(dtype=prompt_embeds_dtype, device=device)
 
         bs_embed, seq_len, _ = prompt_embeds.shape
         # duplicate text embeddings for each generation per prompt, using mps friendly method
         prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
         prompt_embeds = prompt_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
+        prompt_embed_pooled = prompt_embed_pooled.repeat(1, num_images_per_prompt, 1)
+        prompt_embed_pooled = prompt_embed_pooled.view(bs_embed * num_images_per_prompt, -1)
 
         # get unconditional embeddings for classifier free guidance
         if do_classifier_free_guidance and negative_prompt_embeds is None:
@@ -508,8 +515,13 @@ class StableDiffusionPipeline(
             if isinstance(self, StableDiffusionLoraLoaderMixin) and USE_PEFT_BACKEND:
                 # Retrieve the original scale by scaling back the LoRA layers
                 unscale_lora_layers(self.text_encoder, lora_scale)
+        
 
-        return prompt_embeds, negative_prompt_embeds
+        if self.use_projection_matrix:
+            prompt_embeds = self.projection_matrix.calibrate_only(prompt_embeds)
+            negative_prompt_embeds = self.projection_matrix.calibrate_only(negative_prompt_embeds)
+
+        return prompt_embeds, negative_prompt_embeds, prompt_embed_pooled
 
     def encode_image(self, image, device, num_images_per_prompt, output_hidden_states=None):
         dtype = next(self.image_encoder.parameters()).dtype
@@ -774,6 +786,25 @@ class StableDiffusionPipeline(
     @property
     def interrupt(self):
         return self._interrupt
+    
+
+    @property
+    def use_projection_matrix(self):
+        return self._use_projection_matrix
+    
+    @use_projection_matrix.setter
+    def use_projection_matrix(self, value):
+        print(f"Setting use_projection_matrix to {value}")
+        self._use_projection_matrix = value
+    
+    @property
+    def projection_matrix(self):
+        return self._projection_matrix
+    
+    @projection_matrix.setter
+    def projection_matrix(self, value):
+        self._projection_matrix = value
+    
 
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
@@ -961,7 +992,7 @@ class StableDiffusionPipeline(
             self.cross_attention_kwargs.get("scale", None) if self.cross_attention_kwargs is not None else None
         )
 
-        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+        prompt_embeds, negative_prompt_embeds, _ = self.encode_prompt(
             prompt,
             device,
             num_images_per_prompt,
